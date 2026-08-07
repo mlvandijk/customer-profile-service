@@ -4,3 +4,27 @@ GET http://localhost:8080/profile/customer-1
 ### Trigger a failure in the order service
 GET http://localhost:8080/profile/customer-1?fail=true
 
+### Loop customer profile requests (1000 iterations with random delay)
+< {%
+  const baseCustomers = [
+    {id: "customer-1"},
+    {id: "customer-2"},
+    {id: "customer-3"}
+  ]
+
+  const totalIterations = 1000
+  const customers = Array.from(
+    {length: totalIterations},
+    (_, i) => baseCustomers[i % baseCustomers.length]
+  )
+  request.variables.set("customers", customers)
+%}
+
+GET http://localhost:8080/profile/{{$.customers..id}}
+
+> {%
+  const minDelayMs = 150
+  const maxDelayMs = 600
+  const delay = Math.floor(minDelayMs + Math.random() * (maxDelayMs - minDelayMs))
+  await sleep(delay)
+%}
