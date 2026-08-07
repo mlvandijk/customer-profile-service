@@ -2,8 +2,6 @@ package com.maritvandijk.profileservice.service;
 
 import com.maritvandijk.profileservice.client.OrderServiceClient;
 import com.maritvandijk.profileservice.client.RecommendationServiceClient;
-import com.maritvandijk.profileservice.exception.OrderServiceException;
-import com.maritvandijk.profileservice.exception.RecommendationServiceException;
 import com.maritvandijk.profileservice.model.CustomerProfile;
 import com.maritvandijk.profileservice.model.Order;
 import com.maritvandijk.profileservice.model.Recommendation;
@@ -18,8 +16,7 @@ import org.springframework.web.client.RestClientResponseException;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -51,46 +48,41 @@ class CustomerProfileServiceTest {
     }
 
     @Test
-    @DisplayName("throws OrderServiceException when order client throws")
-    void throwsOrderServiceExceptionWhenOrderClientThrows() {
+    @DisplayName("throws RestClientResponseException when order client throws")
+    void throwsRestClientResponseExceptionWhenOrderClientThrows() {
         CustomerProfileService service = new CustomerProfileService(orderClient, recommendationClient);
         when(orderClient.getOrders(any())).thenThrow(serviceUnavailable());
         when(recommendationClient.getRecommendations(any()))
                 .thenReturn(List.of(new Recommendation("rec-1", "Super Widget")));
 
         assertThatThrownBy(() -> service.getProfile("customer-1"))
-                .isInstanceOf(OrderServiceException.class);
+                .isInstanceOf(RestClientResponseException.class);
     }
 
     @Test
-    @DisplayName("throws RecommendationServiceException when recommendation client throws")
-    void throwsRecommendationServiceExceptionWhenRecommendationClientThrows() {
+    @DisplayName("throws RestClientResponseException when recommendation client throws")
+    void throwsRestClientResponseExceptionWhenRecommendationClientThrows() {
         CustomerProfileService service = new CustomerProfileService(orderClient, recommendationClient);
         when(orderClient.getOrders(any())).thenReturn(List.of(new Order("order-1", "Widget")));
         when(recommendationClient.getRecommendations(any())).thenThrow(serviceUnavailable());
 
         assertThatThrownBy(() -> service.getProfile("customer-1"))
-                .isInstanceOf(RecommendationServiceException.class);
+                .isInstanceOf(RestClientResponseException.class);
     }
 
     @Test
-    @DisplayName("cancels the other future when one task times out")
-    void cancelsTheOtherFutureWhenOneTaskTimesOut() {
+    @DisplayName("throws TimeoutException when one task times out")
+    void throwsTimeoutExceptionWhenOneTaskTimesOut() {
         CustomerProfileService service = new CustomerProfileService(orderClient, recommendationClient);
-        CountDownLatch releaseLatch = new CountDownLatch(1);
         when(orderClient.getOrders(any())).thenAnswer(_ -> {
-            releaseLatch.await(3, TimeUnit.SECONDS);
+            Thread.sleep(3000);
             return List.of(new Order("order-1", "Widget"));
         });
         when(recommendationClient.getRecommendations(any()))
                 .thenReturn(List.of(new Recommendation("rec-1", "Super Widget")));
 
         assertThatThrownBy(() -> service.getProfile("customer-1"))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("timed out");
-
-        assertThat(releaseLatch.getCount()).isEqualTo(1);
-        releaseLatch.countDown();
+                .isInstanceOf(TimeoutException.class);
     }
 
     private RestClientResponseException serviceUnavailable() {

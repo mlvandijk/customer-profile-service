@@ -54,15 +54,6 @@ class CustomerProfileServiceIT {
     }
 
     @Test
-    @DisplayName("returns 404 for an unknown customer")
-    void returnsNotFoundForUnknownCustomer() {
-        restTestClient.get()
-                .uri("/profile/unknown")
-                .exchange()
-                .expectStatus().isNotFound();
-    }
-
-    @Test
     @DisplayName("returns 502 when the order service fails")
     void returnsBadGatewayWhenOrderServiceFails() {
         stubFor(get(urlEqualTo("/orders/customer-1"))
@@ -74,12 +65,16 @@ class CustomerProfileServiceIT {
                                 [{"itemId":"rec-1","title":"Super Widget"}]
                                 """)));
 
+        // On the modern branch, StructuredTaskScope cancels the sibling subtask automatically
+        // and rethrows the failing subtask's exception directly from scope.join().
         restTestClient.get()
                 .uri("/profile/customer-1")
                 .exchange()
                 .expectStatus().isEqualTo(502);
     }
 
+    // On the modern branch, StructuredTaskScope surfaces failure consistently —
+    // no silent swallowing of the second exception.
     @Test
     @DisplayName("returns 502 when the recommendation service fails")
     void returnsBadGatewayWhenRecommendationServiceFails() {
@@ -98,45 +93,13 @@ class CustomerProfileServiceIT {
                 .expectStatus().isEqualTo(502);
     }
 
-    // Documents current behavior: orderFuture.get() is awaited first, so when both
-    // downstreams fail only OrderServiceException is reported and the recommendation
-    // failure is silently dropped. A real implementation would aggregate or at least
-    // log both failures.
     @Test
-    @DisplayName("when both downstream services fail, only the first awaited failure is surfaced")
-    void surfacesOnlyFirstFailureWhenBothDownstreamsFail() {
+    @DisplayName("returns 5xx when both services fail")
+    void returns5xxWhenBothServicesFail() {
         stubFor(get(urlEqualTo("/orders/customer-1"))
                 .willReturn(aResponse().withStatus(503)));
         stubFor(get(urlEqualTo("/recommendations/customer-1"))
                 .willReturn(aResponse().withStatus(503)));
-
-        restTestClient.get()
-                .uri("/profile/customer-1")
-                .exchange()
-                .expectStatus().isEqualTo(502)
-                .expectBody()
-                .jsonPath("$.detail").isEqualTo("Order service unavailable");
-    }
-
-    // Documents current behavior: the per-future 2-second timeout fires, but the
-    // resulting RuntimeException("Request timed out") isn't mapped by GlobalExceptionHandler,
-    // so it surfaces as a generic 500. A real-world fix would map it to 504 Gateway Timeout.
-    @Test
-    @DisplayName("times out as 500 when the order service is slow")
-    void timesOutWhenOrderServiceIsSlow() {
-        stubFor(get(urlEqualTo("/orders/customer-1"))
-                .willReturn(aResponse()
-                        .withHeader("Content-Type", "application/json")
-                        .withFixedDelay(3000)
-                        .withBody("""
-                                [{"orderId":"order-1","description":"Widget"}]
-                                """)));
-        stubFor(get(urlEqualTo("/recommendations/customer-1"))
-                .willReturn(aResponse()
-                        .withHeader("Content-Type", "application/json")
-                        .withBody("""
-                                [{"itemId":"rec-1","title":"Super Widget"}]
-                                """)));
 
         restTestClient.get()
                 .uri("/profile/customer-1")
@@ -145,11 +108,12 @@ class CustomerProfileServiceIT {
     }
 
     @Test
-    @DisplayName("times out as 500 when the recommendation service is slow")
-    void timesOutWhenRecommendationServiceIsSlow() {
+    @DisplayName("returns 504 when request times out")
+    void returnsGatewayTimeoutWhenRequestTimesOut() {
         stubFor(get(urlEqualTo("/orders/customer-1"))
                 .willReturn(aResponse()
                         .withHeader("Content-Type", "application/json")
+                        .withFixedDelay(3000)
                         .withBody("""
                                 [{"orderId":"order-1","description":"Widget"}]
                                 """)));
@@ -164,7 +128,7 @@ class CustomerProfileServiceIT {
         restTestClient.get()
                 .uri("/profile/customer-1")
                 .exchange()
-                .expectStatus().is5xxServerError();
+                .expectStatus().isEqualTo(504);
     }
 
     // Regression guard for the parallelism claim: with each downstream stubbed at

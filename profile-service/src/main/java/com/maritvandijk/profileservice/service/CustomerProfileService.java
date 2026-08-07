@@ -3,22 +3,19 @@ package com.maritvandijk.profileservice.service;
 import com.maritvandijk.profileservice.client.OrderServiceClient;
 import com.maritvandijk.profileservice.client.RecommendationServiceClient;
 import com.maritvandijk.profileservice.exception.OrderServiceException;
-import com.maritvandijk.profileservice.exception.RecommendationServiceException;
 import com.maritvandijk.profileservice.model.CustomerProfile;
-import com.maritvandijk.profileservice.model.Order;
-import com.maritvandijk.profileservice.model.Recommendation;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClientResponseException;
 
-import java.util.List;
-import java.util.concurrent.*;
+import java.time.Duration;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.StructuredTaskScope.Joiner;
+import java.util.concurrent.TimeoutException;
 
 @Service
 public class CustomerProfileService {
 
     private static final ScopedValue<String> CUSTOMER_ID = ScopedValue.newInstance();
-
-    private final ExecutorService executor = Executors.newFixedThreadPool(10);
 
     private final OrderServiceClient orderServiceClient;
     private final RecommendationServiceClient recommendationServiceClient;
@@ -29,46 +26,29 @@ public class CustomerProfileService {
         this.recommendationServiceClient = recommendationServiceClient;
     }
 
-    public CustomerProfile getProfile(String customerId) throws OrderServiceException, RecommendationServiceException {
+    public CustomerProfile getProfile(String customerId) throws InterruptedException, TimeoutException {
         try {
             return ScopedValue.where(CUSTOMER_ID, customerId).call(() -> {
-                String contextCustomerId = CUSTOMER_ID.get();
-                CompletableFuture<List<Order>> orderFuture =
-                        CompletableFuture.supplyAsync(() -> orderServiceClient.getOrders(contextCustomerId), executor);
-                CompletableFuture<List<Recommendation>> recFuture =
-                        CompletableFuture.supplyAsync(() -> recommendationServiceClient.getRecommendations(contextCustomerId), executor);
-
-        CompletableFuture<Void> allFutures = CompletableFuture.allOf(orderFuture, recFuture);
-
-        try {
-            allFutures.get(2, TimeUnit.SECONDS);
-            return new CustomerProfile(customerId, orderFuture.join(), recFuture.join());
-        }
-
-        catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            orderFuture.cancel(true);
-            recFuture.cancel(true);
-
-                    if (cause instanceof RestClientResponseException ex && ex.getStatusCode().value() == 503) {
-                        if (orderFuture.isCompletedExceptionally()) {
-                            throw new OrderServiceException("Order service unavailable", e.getCause());
-                        }
-                        if (recFuture.isCompletedExceptionally()) {
-                            throw new RecommendationServiceException("Recommendation service unavailable", e.getCause());
-                        }
+                try (var scope = StructuredTaskScope.open(
+                        Joiner.awaitAllSuccessfulOrThrow(),
+                        config -> config.withName("customer-profile").withTimeout(Duration.ofSeconds(2)))) {
+                    var orderTask = scope.fork(() -> orderServiceClient.getOrders(CUSTOMER_ID.get()));
+                    var recTask = scope.fork(() -> recommendationServiceClient.getRecommendations(CUSTOMER_ID.get()));
+                    scope.join();
+                    return new CustomerProfile(customerId, orderTask.get(), recTask.get());
+                } catch (ExecutionException e) {
+                    switch (e.getCause()) {
+                        case StructuredTaskScope.CancelledByTimeoutException _ -> throw new TimeoutException("Request timed out");
+                        case OrderServiceException ose -> throw ose;
+                        case RuntimeException rte -> throw rte;
+                        default -> throw new RuntimeException(e.getCause());
                     }
-                    throw new RuntimeException("Unexpected error", e.getCause());
-                } catch (TimeoutException e) {
-                    orderFuture.cancel(true);
-                    recFuture.cancel(true);
-                    throw new RuntimeException("Request timed out");
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted", e);
                 }
             });
-        } catch (OrderServiceException | RecommendationServiceException | RuntimeException e) {
+        } catch (InterruptedException | TimeoutException | RuntimeException e) {
             throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
