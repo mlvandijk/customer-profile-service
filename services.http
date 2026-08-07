@@ -1,0 +1,11 @@
+### Get orders for a known customer
+GET http://localhost:8081/orders/customer-1
+
+### Get orders — trigger failure
+GET http://localhost:8081/orders/customer-1?fail=true
+
+### Get recommendations for a known customer
+GET http://localhost:8081/recommendations/customer-1
+
+### Get recommendations — trigger failure
+GET http://localhost:8081/recommendations/customer-1?fail=true
