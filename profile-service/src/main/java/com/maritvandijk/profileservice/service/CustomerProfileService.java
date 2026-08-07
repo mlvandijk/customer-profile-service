@@ -16,7 +16,7 @@ import java.util.concurrent.*;
 @Service
 public class CustomerProfileService {
 
-    private static final ThreadLocal<String> CUSTOMER_CONTEXT = new ThreadLocal<>();
+    private static final ScopedValue<String> CUSTOMER_ID = ScopedValue.newInstance();
 
     private final ExecutorService executor = Executors.newFixedThreadPool(10);
 
@@ -30,13 +30,13 @@ public class CustomerProfileService {
     }
 
     public CustomerProfile getProfile(String customerId) throws OrderServiceException, RecommendationServiceException {
-        CUSTOMER_CONTEXT.set(customerId);
-
-        String contextCustomerId = CUSTOMER_CONTEXT.get();
-        CompletableFuture<List<Order>> orderFuture =
-                CompletableFuture.supplyAsync(() -> orderServiceClient.getOrders(contextCustomerId), executor);
-        CompletableFuture<List<Recommendation>> recFuture =
-                CompletableFuture.supplyAsync(() -> recommendationServiceClient.getRecommendations(contextCustomerId), executor);
+        try {
+            return ScopedValue.where(CUSTOMER_ID, customerId).call(() -> {
+                String contextCustomerId = CUSTOMER_ID.get();
+                CompletableFuture<List<Order>> orderFuture =
+                        CompletableFuture.supplyAsync(() -> orderServiceClient.getOrders(contextCustomerId), executor);
+                CompletableFuture<List<Recommendation>> recFuture =
+                        CompletableFuture.supplyAsync(() -> recommendationServiceClient.getRecommendations(contextCustomerId), executor);
 
         CompletableFuture<Void> allFutures = CompletableFuture.allOf(orderFuture, recFuture);
 
@@ -50,24 +50,28 @@ public class CustomerProfileService {
             orderFuture.cancel(true);
             recFuture.cancel(true);
 
-            if (cause instanceof RestClientResponseException ex && ex.getStatusCode().value() == 503) {
-                if (orderFuture.isCompletedExceptionally()) {
-                    throw new OrderServiceException("Order service unavailable", e.getCause());
+                    if (cause instanceof RestClientResponseException ex && ex.getStatusCode().value() == 503) {
+                        if (orderFuture.isCompletedExceptionally()) {
+                            throw new OrderServiceException("Order service unavailable", e.getCause());
+                        }
+                        if (recFuture.isCompletedExceptionally()) {
+                            throw new RecommendationServiceException("Recommendation service unavailable", e.getCause());
+                        }
+                    }
+                    throw new RuntimeException("Unexpected error", e.getCause());
+                } catch (TimeoutException e) {
+                    orderFuture.cancel(true);
+                    recFuture.cancel(true);
+                    throw new RuntimeException("Request timed out");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted", e);
                 }
-                if (recFuture.isCompletedExceptionally()) {
-                    throw new RecommendationServiceException("Recommendation service unavailable", e.getCause());
-                }
-            }
-            throw new RuntimeException("Unexpected error", e.getCause());
-        } catch (TimeoutException e) {
-            orderFuture.cancel(true);
-            recFuture.cancel(true);
-            throw new RuntimeException("Request timed out");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted", e);
-        } finally {
-            CUSTOMER_CONTEXT.remove();
+            });
+        } catch (OrderServiceException | RecommendationServiceException | RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 }
