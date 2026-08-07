@@ -1,0 +1,6 @@
+### Single request
+GET http://localhost:8080/profile/customer-1
+
+### Trigger a failure in the order service
+GET http://localhost:8080/profile/customer-1?fail=true
+
